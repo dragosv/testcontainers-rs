@@ -14,6 +14,15 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 - Install the [cargo-hack](https://github.com/taiki-e/cargo-hack) subcommand (recommended)
 - Fork this repository
 
+### Dev Containers (optional)
+
+If you prefer a pre-configured environment in VS Code:
+
+1. Open the repository in VS Code
+2. Run `Dev Containers: Reopen in Container`
+
+The provided setup installs Rust `1.88`, nightly `rustfmt`, `cargo-hack`, and Docker CLI support needed for container-based tests.
+
 ### Formatting
 
 We rely on `rustfmt` (`nightly`):
