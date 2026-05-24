@@ -1,44 +1,76 @@
-use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt, ReuseDirective};
+#![cfg(feature = "ryuk")]
+
+use std::process::Command;
+
+use testcontainers::{runners::AsyncRunner, GenericImage};
+
+#[cfg(feature = "reusable-containers")]
+use testcontainers::{ImageExt, ReuseDirective};
+
+const SESSION_LABEL_KEY: &str = "org.testcontainers.session-id";
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(value) = self.previous.take() {
+            std::env::set_var(self.key, value);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
+
+fn has_session_label(container_id: &str) -> bool {
+    let output = Command::new("docker")
+        .arg("inspect")
+        .arg("--format={{json .Config.Labels}}")
+        .arg(container_id)
+        .output()
+        .expect("Failed to run docker inspect");
+
+    assert!(
+        output.status.success(),
+        "docker inspect failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let labels_json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Invalid labels JSON from docker inspect");
+
+    labels_json
+        .as_object()
+        .map(|labels| labels.contains_key(SESSION_LABEL_KEY))
+        .unwrap_or(false)
+}
 
 #[tokio::test]
 async fn test_ryuk_behavior() {
-    // 1. Normal Ryuk behavior: Container should have the session-id label
+    // Normal Ryuk behavior: container should carry the session-id label.
     let container = GenericImage::new("hello-world", "latest")
         .start()
         .await
         .expect("Failed to start container");
-    
-    let id = container.id();
-    let output = std::process::Command::new("docker")
-        .arg("inspect")
-        .arg("--format={{json .Config.Labels}}")
-        .arg(id)
-        .output()
-        .expect("Failed to run docker inspect");
-        
-    let labels_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let labels = labels_json.as_object().unwrap();
-    assert!(labels.contains_key("org.testcontainers.session-id"));
+    assert!(has_session_label(container.id()));
 
-    // 2. Disabled Ryuk behavior: Container should NOT have the session-id label
-    std::env::set_var("TESTCONTAINERS_RYUK_DISABLED", "true");
+    // Disabled Ryuk behavior: container should not carry the session-id label.
+    let _guard = EnvVarGuard::set("TESTCONTAINERS_RYUK_DISABLED", "true");
     let container_disabled = GenericImage::new("hello-world", "latest")
         .start()
         .await
         .expect("Failed to start container");
-    
-    let id_disabled = container_disabled.id();
-    let output_disabled = std::process::Command::new("docker")
-        .arg("inspect")
-        .arg("--format={{json .Config.Labels}}")
-        .arg(id_disabled)
-        .output()
-        .expect("Failed to run docker inspect");
-        
-    let labels_json_disabled: serde_json::Value = serde_json::from_slice(&output_disabled.stdout).unwrap();
-    let labels_disabled = labels_json_disabled.as_object().unwrap();
-    assert!(!labels_disabled.contains_key("org.testcontainers.session-id"));
-    std::env::remove_var("TESTCONTAINERS_RYUK_DISABLED");
+    assert!(!has_session_label(container_disabled.id()));
 }
 
 #[cfg(feature = "reusable-containers")]
@@ -49,18 +81,6 @@ async fn test_ryuk_ignores_always_reusable() {
         .start()
         .await
         .expect("Failed to start container");
-    
-    let id = container.id();
-    
-    let output = std::process::Command::new("docker")
-        .arg("inspect")
-        .arg("--format={{json .Config.Labels}}")
-        .arg(id)
-        .output()
-        .expect("Failed to run docker inspect");
-        
-    let labels_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let labels = labels_json.as_object().unwrap();
-    
-    assert!(!labels.contains_key("org.testcontainers.session-id"));
+
+    assert!(!has_session_label(container.id()));
 }

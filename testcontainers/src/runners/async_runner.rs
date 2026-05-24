@@ -802,6 +802,41 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "ryuk")]
+    #[tokio::test]
+    async fn async_should_label_created_network_for_ryuk() -> anyhow::Result<()> {
+        if crate::ryuk::is_disabled() {
+            return Ok(());
+        }
+
+        let client = Client::lazy_client().await?;
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock must be after unix epoch")
+            .as_nanos();
+        let network_name = format!("awesome-net-ryuk-{unique}");
+
+        let container = GenericImage::new("testcontainers/helloworld", "1.3.0")
+            .with_network(network_name.clone())
+            .start()
+            .await?;
+
+        let labels = client
+            .inspect_network(&network_name)
+            .await?
+            .labels
+            .unwrap_or_default();
+
+        assert_eq!(
+            labels.get(crate::ryuk::SESSION_LABEL_KEY).map(String::as_str),
+            Some(crate::ryuk::session_id()),
+            "Network labels are {labels:?}"
+        );
+
+        container.rm().await?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn async_run_command_should_include_name() -> anyhow::Result<()> {
         let client = Client::lazy_client().await?;
