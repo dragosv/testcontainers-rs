@@ -368,11 +368,16 @@ impl Client {
     }
 
     /// Creates a network with given name and returns an ID
-    pub(crate) async fn create_network(&self, name: &str) -> Result<String, ClientError> {
+    pub(crate) async fn create_network(
+        &self,
+        name: &str,
+        labels: HashMap<String, String>,
+    ) -> Result<String, ClientError> {
         let network = self
             .bollard
             .create_network(NetworkCreateRequest {
                 name: name.to_owned(),
+                labels: Some(labels),
                 ..Default::default()
             })
             .await

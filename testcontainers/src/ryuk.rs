@@ -143,6 +143,10 @@ async fn start_ryuk(client: Arc<Client>) -> Result<Arc<RyukHandle>, Testcontaine
     let container_config = ContainerCreateBody {
         image: Some(image.clone()),
         env,
+        exposed_ports: Some(vec![format!(
+            "{}",
+            crate::core::ports::ContainerPort::Tcp(RYUK_INTERNAL_PORT)
+        )]),
         host_config: Some(HostConfig {
             privileged: Some(true),
             publish_all_ports: Some(true),
@@ -179,10 +183,15 @@ async fn start_ryuk(client: Arc<Client>) -> Result<Arc<RyukHandle>, Testcontaine
             ))
         })?;
 
-    // Connect to Ryuk and send the session label filter.
-    let stream = TcpStream::connect(("127.0.0.1", host_port))
-        .await
-        .map_err(|e| TestcontainersError::other(format!("Cannot connect to Ryuk: {e}")))?;
+    // Connect to Ryuk using the resolved Docker host so remote daemons and
+    // in-container clients reach the published port correctly.
+    let docker_host = client.docker_hostname().await?;
+    let stream = match docker_host {
+        url::Host::Domain(domain) => TcpStream::connect((domain.as_str(), host_port)).await,
+        url::Host::Ipv4(address) => TcpStream::connect((address, host_port)).await,
+        url::Host::Ipv6(address) => TcpStream::connect((address, host_port)).await,
+    }
+    .map_err(|e| TestcontainersError::other(format!("Cannot connect to Ryuk: {e}")))?;
 
     let mut buf_reader = BufReader::new(stream);
 

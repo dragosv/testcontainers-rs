@@ -40,7 +40,17 @@ impl Network {
                 return Ok(None);
             }
 
-            let id = client.create_network(&name).await?;
+            let mut labels = HashMap::new();
+
+            #[cfg(feature = "ryuk")]
+            if !crate::ryuk::is_disabled() {
+                labels.insert(
+                    crate::ryuk::SESSION_LABEL_KEY.to_string(),
+                    crate::ryuk::session_id().to_string(),
+                );
+            }
+
+            let id = client.create_network(&name, labels).await?;
 
             let created = Arc::new(Self {
                 name: name.clone(),
