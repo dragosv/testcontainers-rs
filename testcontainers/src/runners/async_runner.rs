@@ -23,24 +23,20 @@ use crate::{
 };
 
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
-#[cfg(feature = "reusable-containers")]
-static TESTCONTAINERS_SESSION_ID: std::sync::LazyLock<ferroid::id::ULID> =
-    std::sync::LazyLock::new(ferroid::id::ULID::now);
+
+// Session ID static is only needed when `reusable-containers` is enabled but `ryuk` is not.
+// When `ryuk` is enabled it owns the canonical session ID.
+#[cfg(all(feature = "reusable-containers", not(feature = "ryuk")))]
+static TESTCONTAINERS_SESSION_ID: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| ferroid::id::ULID::now().to_string());
 
 #[doc(hidden)]
-/// A unique identifier for the currently "active" `testcontainers` "session".
+/// Returns the unique session ID for this test process.
 ///
-/// This identifier is used to ensure that the current "session" does not confuse
-/// containers it creates with those created by previous runs of a test suite.
-///
-/// For reference: without a unique-per-session identifier, containers created by
-/// previous test sessions that were marked `reuse`, (or where the test suite was
-/// run with the `TESTCONTAINERS_COMMAND` environment variable set to `keep`), that
-/// *haven't* been manually cleaned up could be incorrectly returned from methods
-/// like [`Client::get_container`](Client::get_container),
-/// as the container name, labels, and network would all still match.
-#[cfg(feature = "reusable-containers")]
-pub(crate) fn session_id() -> &'static ferroid::id::ULID {
+/// Only available when `reusable-containers` is enabled without `ryuk`.
+/// When the `ryuk` feature is active use [`crate::ryuk::session_id`] instead.
+#[cfg(all(feature = "reusable-containers", not(feature = "ryuk")))]
+pub(crate) fn session_id() -> &'static str {
     &TESTCONTAINERS_SESSION_ID
 }
 
@@ -83,6 +79,12 @@ where
         let host_port_exposure = HostPortExposure::setup(&mut container_req).await?;
 
         let client = Client::lazy_client().await?;
+
+        // Ensure the Ryuk resource reaper is running before creating any container so
+        // that all containers started in this session are cleaned up on exit.
+        #[cfg(feature = "ryuk")]
+        crate::ryuk::ensure_ryuk_running(&client).await?;
+
         let mut create_options: Option<CreateContainerOptions> = None;
 
         let extra_hosts: Vec<_> = container_req
@@ -100,7 +102,27 @@ where
                         "org.testcontainers.managed-by".into(),
                         "testcontainers".into(),
                     ),
-                    #[cfg(feature = "reusable-containers")]
+                    // Ryuk: tag every container (except Always-reusable ones) so the reaper
+                    // can remove them when the test process exits.
+                    #[cfg(feature = "ryuk")]
+                    {
+                        #[cfg(feature = "reusable-containers")]
+                        let should_label = !crate::ryuk::is_disabled()
+                            && container_req.reuse() != crate::ReuseDirective::Always;
+                        #[cfg(not(feature = "reusable-containers"))]
+                        let should_label = !crate::ryuk::is_disabled();
+
+                        if should_label {
+                            (
+                                crate::ryuk::SESSION_LABEL_KEY.to_string(),
+                                crate::ryuk::session_id().to_string(),
+                            )
+                        } else {
+                            Default::default()
+                        }
+                    },
+                    // Without Ryuk: only label CurrentSession reusable containers.
+                    #[cfg(all(not(feature = "ryuk"), feature = "reusable-containers"))]
                     {
                         if container_req.reuse() != crate::ReuseDirective::CurrentSession {
                             Default::default()
@@ -528,7 +550,16 @@ mod tests {
             "testcontainers".to_string(),
         );
 
-        #[cfg(feature = "reusable-containers")]
+        #[cfg(feature = "ryuk")]
+        if !crate::ryuk::is_disabled() {
+            labels.extend([(
+                crate::ryuk::SESSION_LABEL_KEY.to_string(),
+                crate::ryuk::session_id().to_string(),
+            )]);
+        }
+
+        // Without Ryuk: only CurrentSession reusable containers carry the session-id label.
+        #[cfg(all(not(feature = "ryuk"), feature = "reusable-containers"))]
         labels.extend([(
             "org.testcontainers.session-id".to_string(),
             session_id().to_string(),

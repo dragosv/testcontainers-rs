@@ -474,7 +474,14 @@ mod tests {
                     "org.testcontainers.managed-by=testcontainers".to_string(),
                     format!(
                         "org.testcontainers.session-id={}",
-                        crate::runners::async_runner::session_id()
+                        {
+                            // When ryuk is active it owns the canonical session ID;
+                            // otherwise fall back to the reusable-containers session ID.
+                            #[cfg(feature = "ryuk")]
+                            { crate::ryuk::session_id() }
+                            #[cfg(not(feature = "ryuk"))]
+                            { crate::runners::async_runner::session_id() }
+                        }
                     ),
                 ])
                 .collect(),

@@ -95,6 +95,10 @@ pub use crate::core::{
     BuildableImage, ContainerAsync, ContainerRequest, Healthcheck, Image, ImageExt,
 };
 
+#[cfg(feature = "ryuk")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ryuk")))]
+pub(crate) mod ryuk;
+
 #[cfg(feature = "watchdog")]
 #[cfg_attr(docsrs, doc(cfg(feature = "watchdog")))]
 pub(crate) mod watchdog;
