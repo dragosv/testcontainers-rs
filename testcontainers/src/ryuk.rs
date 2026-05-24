@@ -148,6 +148,7 @@ async fn start_ryuk(client: Arc<Client>) -> Result<Arc<RyukHandle>, Testcontaine
             crate::core::ports::ContainerPort::Tcp(RYUK_INTERNAL_PORT)
         )]),
         host_config: Some(HostConfig {
+            auto_remove: Some(true),
             privileged: Some(true),
             publish_all_ports: Some(true),
             mounts: socket_mounts,
@@ -186,33 +187,34 @@ async fn start_ryuk(client: Arc<Client>) -> Result<Arc<RyukHandle>, Testcontaine
     // Connect to Ryuk using the resolved Docker host so remote daemons and
     // in-container clients reach the published port correctly.
     let docker_host = client.docker_hostname().await?;
-    let stream = match docker_host {
-        url::Host::Domain(domain) => TcpStream::connect((domain.as_str(), host_port)).await,
-        url::Host::Ipv4(address) => TcpStream::connect((address, host_port)).await,
-        url::Host::Ipv6(address) => TcpStream::connect((address, host_port)).await,
-    }
-    .map_err(|e| TestcontainersError::other(format!("Cannot connect to Ryuk: {e}")))?;
+    let mut attempt = 0;
+    let buf_reader = loop {
+        let stream_res = match &docker_host {
+            url::Host::Domain(domain) => TcpStream::connect((domain.as_str(), host_port)).await,
+            url::Host::Ipv4(address) => TcpStream::connect((*address, host_port)).await,
+            url::Host::Ipv6(address) => TcpStream::connect((*address, host_port)).await,
+        };
 
-    let mut buf_reader = BufReader::new(stream);
-
-    let filter = format!("label={}={}\n", SESSION_LABEL_KEY, session_id());
-    buf_reader
-        .get_mut()
-        .write_all(filter.as_bytes())
-        .await
-        .map_err(|e| TestcontainersError::other(format!("Cannot send filter to Ryuk: {e}")))?;
-
-    let mut ack = String::new();
-    buf_reader
-        .read_line(&mut ack)
-        .await
-        .map_err(|e| TestcontainersError::other(format!("Cannot read ACK from Ryuk: {e}")))?;
-
-    if ack.trim() != "ACK" {
-        return Err(TestcontainersError::other(format!(
-            "Unexpected response from Ryuk: {ack:?}"
-        )));
-    }
+        if let Ok(stream) = stream_res {
+            let mut buf_reader = BufReader::new(stream);
+            let filter = format!("label={}={}\n", SESSION_LABEL_KEY, session_id());
+            
+            if buf_reader.get_mut().write_all(filter.as_bytes()).await.is_ok() {
+                let mut ack = String::new();
+                if buf_reader.read_line(&mut ack).await.is_ok() {
+                    if ack.trim() == "ACK" {
+                        break buf_reader;
+                    }
+                }
+            }
+        }
+        
+        attempt += 1;
+        if attempt >= 10 {
+            return Err(TestcontainersError::other("Cannot connect to Ryuk and receive ACK"));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
 
     log::debug!(
         "Ryuk ready (container: {container_id}, port: {host_port}, session: {})",
